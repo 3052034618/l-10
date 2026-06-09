@@ -4,7 +4,8 @@ import {
   PowerAnalysis,
   RunningTrainingData,
   CyclingTrainingData,
-  TrainingRecord
+  TrainingRecord,
+  PowerSample
 } from '../types';
 import { dataStore } from '../store';
 import { calculateAverage, calculateStandardDeviation, percentile, calculateDistance } from '../utils';
@@ -83,26 +84,153 @@ export class PerformanceAnalyzer {
     };
   }
 
-  analyzePower(data: CyclingTrainingData, ftp?: number): PowerAnalysis {
-    const powerSamples = data.powerSamples || [];
-    const powerValues = powerSamples.map(s => s.power);
+  private normalizePowerSamples(samples: PowerSample[]): PowerSample[] {
+    if (samples.length === 0) return [];
 
-    const avgPower = powerValues.length > 0 ? calculateAverage(powerValues) : 0;
+    const timestampMap = new Map<number, number>();
+
+    for (const sample of samples) {
+      const ts = Math.round(sample.timestamp);
+      if (!timestampMap.has(ts)) {
+        timestampMap.set(ts, sample.power);
+      } else {
+        const existing = timestampMap.get(ts)!;
+        timestampMap.set(ts, (existing + sample.power) / 2);
+      }
+    }
+
+    return Array.from(timestampMap.entries())
+      .map(([timestamp, power]) => ({ timestamp, power }))
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  private removePowerSpikes(samples: PowerSample[], thresholdMultiplier: number = 3.5): PowerSample[] {
+    if (samples.length < 5) return samples;
+
+    const sorted = [...samples].sort((a, b) => a.timestamp - b.timestamp);
+    const powerValues = sorted.map(s => s.power);
+    const sortedPowers = [...powerValues].sort((a, b) => a - b);
+
+    const median = percentile(sortedPowers, 50);
+    const deviations = sortedPowers.map(p => Math.abs(p - median)).sort((a, b) => a - b);
+    const mad = percentile(deviations, 50);
+    
+    let threshold: number;
+    if (mad > median * 0.02) {
+      threshold = median + thresholdMultiplier * mad * 1.4826;
+    } else {
+      threshold = median * 2.5;
+    }
+
+    const filtered: PowerSample[] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const current = sorted[i];
+
+      if (current.power <= threshold) {
+        filtered.push(current);
+      } else {
+        let prevValid = 0;
+        let nextValid = 0;
+
+        for (let j = i - 1; j >= 0; j--) {
+          if (sorted[j].power <= threshold) {
+            prevValid = sorted[j].power;
+            break;
+          }
+        }
+
+        for (let j = i + 1; j < sorted.length; j++) {
+          if (sorted[j].power <= threshold) {
+            nextValid = sorted[j].power;
+            break;
+          }
+        }
+
+        if (prevValid > 0 && nextValid > 0) {
+          filtered.push({
+          timestamp: current.timestamp,
+          power: (prevValid + nextValid) / 2
+        });
+        } else if (prevValid > 0) {
+          filtered.push({ timestamp: current.timestamp, power: prevValid });
+        } else if (nextValid > 0) {
+          filtered.push({ timestamp: current.timestamp, power: nextValid });
+        } else {
+          filtered.push(current);
+        }
+      }
+    }
+
+    return filtered;
+  }
+
+  private calculateNormalizedPower(samples: PowerSample[]): number {
+    if (samples.length < 10) {
+      return calculateAverage(samples.map(s => s.power));
+    }
+
+    const sorted = [...samples].sort((a, b) => a.timestamp - b.timestamp);
+    const windowSize = 30;
+    const windowPowers: number[] = [];
+
+    let windowStartIndex = 0;
+    let windowSum = 0;
+
+    for (let i = 0; i < sorted.length; i++) {
+      windowSum += sorted[i].power ** 4;
+
+      while (sorted[i].timestamp - sorted[windowStartIndex].timestamp > windowSize * 1000 && windowStartIndex < i) {
+        windowSum -= sorted[windowStartIndex].power ** 4;
+        windowStartIndex++;
+      }
+
+      const windowCount = i - windowStartIndex + 1;
+      if (windowCount >= 5) {
+        const avgFourth = windowSum / windowCount;
+        windowPowers.push(Math.pow(avgFourth, 0.25));
+      }
+    }
+
+    if (windowPowers.length === 0) {
+      return calculateAverage(sorted.map(s => s.power));
+    }
+
+    const sortedWindowPowers = [...windowPowers].sort((a, b) => a - b);
+    return percentile(sortedWindowPowers, 95);
+  }
+
+  analyzePower(data: CyclingTrainingData, ftp?: number): PowerAnalysis {
+    const rawPowerSamples = data.powerSamples || [];
+    const normalizedSamples = this.normalizePowerSamples(rawPowerSamples);
+
+    if (normalizedSamples.length === 0) {
+      return {
+        avgPower: 0,
+        maxPower: 0,
+        normalizedPower: 0,
+        powerDistribution: [],
+        trainingStressScore: undefined,
+        intensityFactor: undefined,
+        variabilityIndex: undefined
+      };
+    }
+
+    const filteredSamples = this.removePowerSpikes(normalizedSamples, 3.5);
+
+    const powerValues = filteredSamples.map(s => s.power);
+    const avgPower = calculateAverage(powerValues);
     const maxPower = powerValues.length > 0 ? Math.max(...powerValues) : 0;
 
-    let normalizedPower = avgPower;
+    const normalizedPower = this.calculateNormalizedPower(filteredSamples);
+
     let trainingStressScore: number | undefined;
     let intensityFactor: number | undefined;
     let variabilityIndex: number | undefined;
 
-    if (powerSamples.length > 1) {
-      const sorted = [...powerValues].sort((a, b) => a - b);
-      normalizedPower = percentile(sorted, 75) * 0.95 + percentile(sorted, 95) * 0.05;
-    }
-
     if (ftp && ftp > 0) {
       intensityFactor = normalizedPower / ftp;
-      const durationHours = data.duration / 3600;
+      const durationSeconds = this.calculateTotalDuration(filteredSamples);
+      const durationHours = durationSeconds / 3600;
       trainingStressScore = (durationHours * normalizedPower * intensityFactor) / (ftp * 36) * 100;
     }
 
@@ -110,30 +238,37 @@ export class PerformanceAnalyzer {
       variabilityIndex = normalizedPower / avgPower;
     }
 
-    const powerRanges = [
-      { range: '0-50% FTP', min: 0, max: (ftp || 200) * 0.5 },
-      { range: '50-75% FTP', min: (ftp || 200) * 0.5, max: (ftp || 200) * 0.75 },
-      { range: '75-90% FTP', min: (ftp || 200) * 0.75, max: (ftp || 200) * 0.9 },
-      { range: '90-105% FTP', min: (ftp || 200) * 0.9, max: (ftp || 200) * 1.05 },
-      { range: '105-120% FTP', min: (ftp || 200) * 1.05, max: (ftp || 200) * 1.2 },
-      { range: '120%+ FTP', min: (ftp || 200) * 1.2, max: Infinity }
+    const effectiveFtp = ftp || 200;
+    const powerZones = [
+      { range: '主动恢复', shortRange: '0-55% FTP', min: 0, max: effectiveFtp * 0.55 },
+      { range: '耐力骑', shortRange: '55-75% FTP', min: effectiveFtp * 0.55, max: effectiveFtp * 0.75 },
+      { range: ' tempo', shortRange: '75-90% FTP', min: effectiveFtp * 0.75, max: effectiveFtp * 0.90 },
+      { range: '阈值', shortRange: '90-105% FTP', min: effectiveFtp * 0.90, max: effectiveFtp * 1.05 },
+      { range: 'VO2max', shortRange: '105-120% FTP', min: effectiveFtp * 1.05, max: effectiveFtp * 1.20 },
+      { range: '无氧能力', shortRange: '120-150% FTP', min: effectiveFtp * 1.20, max: effectiveFtp * 1.50 },
+      { range: '神经肌肉', shortRange: '150%+ FTP', min: effectiveFtp * 1.50, max: Infinity }
     ];
 
-    const powerDistribution = powerRanges.map(range => {
+    const totalDuration = this.calculateTotalDuration(filteredSamples);
+    const powerDistribution = powerZones.map(zone => {
       let duration = 0;
-      if (powerSamples.length > 1) {
-        const sorted = [...powerSamples].sort((a, b) => a.timestamp - b.timestamp);
-        for (let i = 1; i < sorted.length; i++) {
-          const avgP = (sorted[i].power + sorted[i - 1].power) / 2;
-          if (avgP >= range.min && avgP < range.max) {
-            duration += (sorted[i].timestamp - sorted[i - 1].timestamp) / 1000;
+      if (filteredSamples.length > 1) {
+        for (let i = 1; i < filteredSamples.length; i++) {
+          const avgP = (filteredSamples[i].power + filteredSamples[i - 1].power) / 2;
+          if (avgP >= zone.min && avgP < zone.max) {
+            duration += (filteredSamples[i].timestamp - filteredSamples[i - 1].timestamp) / 1000;
           }
+        }
+      } else if (filteredSamples.length === 1) {
+        if (filteredSamples[0].power >= zone.min && filteredSamples[0].power < zone.max) {
+          duration = 60;
         }
       }
       return {
-        range: range.range,
+        range: zone.shortRange,
+        zoneName: zone.range,
         duration: Math.round(duration),
-        percentage: data.duration > 0 ? Math.round((duration / data.duration) * 100) : 0
+        percentage: totalDuration > 0 ? Math.round((duration / totalDuration) * 100) : 0
       };
     });
 
@@ -146,6 +281,14 @@ export class PerformanceAnalyzer {
       intensityFactor: intensityFactor ? Math.round(intensityFactor * 1000) / 1000 : undefined,
       variabilityIndex: variabilityIndex ? Math.round(variabilityIndex * 1000) / 1000 : undefined
     };
+  }
+
+  private calculateTotalDuration(samples: PowerSample[]): number {
+    if (samples.length < 2) {
+      return samples.length > 0 ? 60 : 0;
+    }
+    const sorted = [...samples].sort((a, b) => a.timestamp - b.timestamp);
+    return (sorted[sorted.length - 1].timestamp - sorted[0].timestamp) / 1000;
   }
 
   analyzeRecordPace(recordId: string): PaceAnalysis | null {

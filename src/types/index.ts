@@ -105,7 +105,29 @@ export interface StrengthSet {
 export interface BallAction {
   actionType: string;
   count: number;
+  successCount?: number;
   successRate?: number;
+  totalAttempts?: number;
+}
+
+export interface HighIntensitySegment {
+  segmentIndex: number;
+  startTime: number;
+  endTime: number;
+  duration: number;
+  avgHeartRate: number;
+  maxHeartRate: number;
+  intensityIndex: number;
+  actionCount?: number;
+}
+
+export interface BallActionDetail {
+  actionType: string;
+  count: number;
+  successCount: number;
+  successRate: number;
+  totalAttempts: number;
+  highIntensityCount?: number;
 }
 
 export interface RunningTrainingData {
@@ -235,6 +257,18 @@ export interface MotionAnalysis {
   totalVolume?: number;
 }
 
+export interface BallAnalysis {
+  totalActions: number;
+  totalSuccessful: number;
+  overallSuccessRate: number;
+  actions: BallActionDetail[];
+  highIntensitySegments: HighIntensitySegment[];
+  highIntensityDuration: number;
+  highIntensityPercentage: number;
+  sprintCount?: number;
+  totalDistance?: number;
+}
+
 export interface FatigueScore {
   score: number;
   level: FatigueLevel;
@@ -300,12 +334,21 @@ export interface SegmentPerformance {
 }
 
 export interface BestPerformance {
+  sportType?: SportType;
   distance?: number;
+  distanceKm?: number;
   time?: number;
+  timeFormatted?: string;
   pace?: number;
+  paceFormatted?: string;
   power?: number;
+  avgPower?: number;
+  normalizedPower?: number;
   date: number;
+  dateFormatted?: string;
   recordId: string;
+  label?: string;
+  value?: string;
 }
 
 export interface TrainingLoadChange {

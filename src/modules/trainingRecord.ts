@@ -101,20 +101,117 @@ export class TrainingRecordManager {
     const performances: BestPerformance[] = [];
 
     for (const record of records) {
-      if ('distance' in record.data && record.data.distance) {
+      if (record.sportType === 'running' && 'distance' in record.data && record.data.distance) {
         const distance = record.data.distance;
-        const pace = record.duration / (distance / 1000);
+        const distanceKm = distance / 1000;
+        const time = record.duration;
+        const pace = time / distanceKm;
+
         performances.push({
+          sportType: record.sportType as any,
           distance,
-          time: record.duration,
-          pace,
+          distanceKm: Math.round(distanceKm * 100) / 100,
+          time,
+          timeFormatted: this.formatTime(time),
+          pace: Math.round(pace * 10) / 10,
+          paceFormatted: this.formatPace(pace),
           date: record.startTime,
-          recordId: record.recordId
+          dateFormatted: this.formatDate(record.startTime),
+          recordId: record.recordId,
+          label: `${distanceKm.toFixed(1)} 公里跑步`,
+          value: this.formatPace(pace)
+        });
+      } else if (record.sportType === 'cycling' && 'distance' in record.data && record.data.distance) {
+        const distance = record.data.distance;
+        const distanceKm = distance / 1000;
+        const time = record.duration;
+        const avgSpeed = distanceKm / (time / 3600);
+
+        let avgPower: number | undefined;
+        let normalizedPower: number | undefined;
+        if ('powerSamples' in record.data && record.data.powerSamples) {
+          const powers = record.data.powerSamples.map(s => s.power);
+          avgPower = Math.round(powers.reduce((a, b) => a + b, 0) / powers.length);
+        }
+
+        performances.push({
+          sportType: record.sportType as any,
+          distance,
+          distanceKm: Math.round(distanceKm * 100) / 100,
+          time,
+          timeFormatted: this.formatTime(time),
+          power: avgPower,
+          avgPower,
+          normalizedPower,
+          date: record.startTime,
+          dateFormatted: this.formatDate(record.startTime),
+          recordId: record.recordId,
+          label: `${distanceKm.toFixed(1)} 公里骑行`,
+          value: avgPower ? `${avgPower}W 平均功率` : `${avgSpeed.toFixed(1)} km/h`
+        });
+      } else if (record.sportType === 'strength') {
+        let totalVolume = 0;
+        let totalSets = 0;
+        if ('sets' in record.data && record.data.sets) {
+          totalVolume = record.data.sets.reduce((sum, s) => sum + s.weight * s.reps, 0);
+          totalSets = record.data.sets.length;
+        }
+        performances.push({
+          sportType: record.sportType as any,
+          time: record.duration,
+          timeFormatted: this.formatTime(record.duration),
+          date: record.startTime,
+          dateFormatted: this.formatDate(record.startTime),
+          recordId: record.recordId,
+          label: `力量训练`,
+          value: `${totalVolume} kg 总容量`
+        });
+      } else if (record.sportType === 'ball') {
+        let actionCount = 0;
+        if ('actions' in record.data && record.data.actions) {
+          actionCount = record.data.actions.reduce((sum, a) => sum + a.count, 0);
+        }
+        performances.push({
+          sportType: record.sportType as any,
+          time: record.duration,
+          timeFormatted: this.formatTime(record.duration),
+          date: record.startTime,
+          dateFormatted: this.formatDate(record.startTime),
+          recordId: record.recordId,
+          label: `球类训练`,
+          value: `${actionCount} 次动作`
         });
       }
     }
 
-    return performances.sort((a, b) => (a.pace || 0) - (b.pace || 0)).slice(0, limit);
+    return performances.sort((a, b) => {
+      if (a.pace && b.pace) return a.pace - b.pace;
+      if (a.power && b.power) return b.power - a.power;
+      return b.date - a.date;
+    }).slice(0, limit);
+  }
+
+  private formatTime(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.round(seconds % 60);
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  private formatPace(paceInSecondsPerKm: number): string {
+    const minutes = Math.floor(paceInSecondsPerKm / 60);
+    const seconds = Math.round(paceInSecondsPerKm % 60);
+    return `${minutes}'${seconds.toString().padStart(2, '0')}"`;
+  }
+
+  private formatDate(timestamp: number): string {
+    const date = new Date(timestamp);
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    return `${month}月${day}日`;
   }
 }
 

@@ -4,7 +4,12 @@ import {
   FatigueScore,
   FatigueLevel,
   StrengthTrainingData,
-  TrainingRecord
+  BallTrainingData,
+  TrainingRecord,
+  BallAnalysis,
+  BallActionDetail,
+  HighIntensitySegment,
+  HeartRateSample
 } from '../types';
 import { dataStore } from '../store';
 import { calculateAverage } from '../utils';
@@ -100,12 +105,146 @@ export class MotionAnalyzer {
     return { count: repCount, quality };
   }
 
-  analyzeRecord(recordId: string): MotionAnalysis | null {
+  analyzeBall(data: BallTrainingData, userId?: string): BallAnalysis {
+    const actionDetails: BallActionDetail[] = [];
+    let totalActions = 0;
+    let totalSuccessful = 0;
+    let totalAttempts = 0;
+
+    if (data.actions && data.actions.length > 0) {
+      for (const action of data.actions) {
+        const successCount = action.successCount !== undefined ? action.successCount : Math.round(action.count * (action.successRate || 0.8));
+        const attempts = action.totalAttempts !== undefined ? action.totalAttempts : action.count;
+        const successRate = action.successRate !== undefined ? action.successRate : (attempts > 0 ? successCount / attempts : 0);
+
+        actionDetails.push({
+          actionType: action.actionType,
+          count: action.count,
+          successCount,
+          successRate: Math.round(successRate * 100) / 100,
+          totalAttempts: attempts
+        });
+
+        totalActions += action.count;
+        totalSuccessful += successCount;
+        totalAttempts += attempts;
+      }
+    }
+
+    const overallSuccessRate = totalAttempts > 0 ? totalSuccessful / totalAttempts : 0;
+
+    const highIntensitySegments = this.detectHighIntensitySegments(
+      data.heartRateSamples || [],
+      data.duration,
+      userId
+    );
+
+    const highIntensityDuration = highIntensitySegments.reduce((sum, s) => sum + s.duration, 0);
+    const highIntensityPercentage = data.duration > 0 ? (highIntensityDuration / data.duration) * 100 : 0;
+
+    return {
+      totalActions,
+      totalSuccessful,
+      overallSuccessRate: Math.round(overallSuccessRate * 100) / 100,
+      actions: actionDetails,
+      highIntensitySegments,
+      highIntensityDuration: Math.round(highIntensityDuration),
+      highIntensityPercentage: Math.round(highIntensityPercentage * 10) / 10,
+      sprintCount: data.sprintCount,
+      totalDistance: data.distance
+    };
+  }
+
+  private detectHighIntensitySegments(
+    hrSamples: HeartRateSample[],
+    totalDuration: number,
+    userId?: string
+  ): HighIntensitySegment[] {
+    const segments: HighIntensitySegment[] = [];
+
+    if (hrSamples.length < 5) {
+      return segments;
+    }
+
+    const user = userId ? dataStore.getUserProfile(userId) : undefined;
+    const maxHr = user?.maxHeartRate || (user?.age ? 220 - user.age : 190);
+    const highIntensityThreshold = maxHr * 0.85;
+
+    const sortedSamples = [...hrSamples].sort((a, b) => a.timestamp - b.timestamp);
+
+    let inHighIntensity = false;
+    let segmentStart = 0;
+    let segmentHrValues: number[] = [];
+    let segmentMaxHr = 0;
+    let segmentIndex = 0;
+
+    for (let i = 0; i < sortedSamples.length; i++) {
+      const sample = sortedSamples[i];
+      const hr = sample.heartRate;
+
+      if (hr >= highIntensityThreshold) {
+        if (!inHighIntensity) {
+          inHighIntensity = true;
+          segmentStart = sample.timestamp;
+          segmentHrValues = [hr];
+          segmentMaxHr = hr;
+        } else {
+          segmentHrValues.push(hr);
+          segmentMaxHr = Math.max(segmentMaxHr, hr);
+        }
+      } else {
+        if (inHighIntensity) {
+          const segmentDuration = (sample.timestamp - segmentStart) / 1000;
+          if (segmentDuration >= 30) {
+            const avgHr = calculateAverage(segmentHrValues);
+            const intensityIndex = Math.min(100, Math.round((avgHr / maxHr) * 100 * 10) / 10);
+            segments.push({
+              segmentIndex,
+              startTime: segmentStart,
+              endTime: sample.timestamp,
+              duration: Math.round(segmentDuration),
+              avgHeartRate: Math.round(avgHr),
+              maxHeartRate: segmentMaxHr,
+              intensityIndex
+            });
+            segmentIndex++;
+          }
+          inHighIntensity = false;
+        }
+      }
+    }
+
+    if (inHighIntensity && segmentHrValues.length > 0) {
+      const lastSample = sortedSamples[sortedSamples.length - 1];
+      const segmentDuration = (lastSample.timestamp - segmentStart) / 1000;
+      if (segmentDuration >= 30) {
+        const avgHr = calculateAverage(segmentHrValues);
+        const intensityIndex = Math.min(100, Math.round((avgHr / maxHr) * 100 * 10) / 10);
+        segments.push({
+          segmentIndex,
+          startTime: segmentStart,
+          endTime: lastSample.timestamp,
+          duration: Math.round(segmentDuration),
+          avgHeartRate: Math.round(avgHr),
+          maxHeartRate: segmentMaxHr,
+          intensityIndex
+        });
+      }
+    }
+
+    return segments;
+  }
+
+  analyzeRecord(recordId: string): MotionAnalysis | BallAnalysis | null {
     const record = dataStore.getTrainingRecord(recordId);
     if (!record) return null;
 
     if (record.sportType === 'strength') {
       return this.analyzeStrength(record.data as StrengthTrainingData);
+    }
+
+    if (record.sportType === 'ball') {
+      return this.analyzeBall(record.data as BallTrainingData, record.userId);
     }
 
     return {

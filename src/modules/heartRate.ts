@@ -44,6 +44,40 @@ export class HeartRateAnalyzer {
     ];
   }
 
+  private normalizeSamples(samples: HeartRateSample[]): HeartRateSample[] {
+    if (samples.length === 0) return [];
+
+    const timestampMap = new Map<number, number>();
+
+    for (const sample of samples) {
+      const ts = Math.round(sample.timestamp);
+      if (!timestampMap.has(ts)) {
+        timestampMap.set(ts, sample.heartRate);
+      } else {
+        const existing = timestampMap.get(ts)!;
+        timestampMap.set(ts, (existing + sample.heartRate) / 2);
+      }
+    }
+
+    const normalized = Array.from(timestampMap.entries())
+      .map(([timestamp, heartRate]) => ({ timestamp, heartRate }))
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    return normalized;
+  }
+
+  private getZoneForHr(hr: number, zones: { zone: HeartRateZone; minHr: number; maxHr: number }[], isMaxZone: boolean): HeartRateZone {
+    for (let i = zones.length - 1; i >= 0; i--) {
+      const zone = zones[i];
+      if (i === zones.length - 1) {
+        if (hr >= zone.minHr) return zone.zone;
+      } else {
+        if (hr >= zone.minHr && hr < zone.maxHr) return zone.zone;
+      }
+    }
+    return zones[0].zone;
+  }
+
   calculateZones(heartRateSamples: HeartRateSample[], userId?: string): HeartRateZoneResult[] {
     const userProfile = userId ? dataStore.getUserProfile(userId) : undefined;
     const maxHr = this.calculateMaxHr(userProfile);
@@ -59,7 +93,9 @@ export class HeartRateAnalyzer {
       [HeartRateZone.MAXIMUM]: 0
     };
 
-    if (heartRateSamples.length < 2) {
+    const samples = this.normalizeSamples(heartRateSamples);
+
+    if (samples.length === 0) {
       return zones.map(z => ({
         ...z,
         duration: 0,
@@ -67,44 +103,73 @@ export class HeartRateAnalyzer {
       }));
     }
 
-    const sortedSamples = [...heartRateSamples].sort((a, b) => a.timestamp - b.timestamp);
+    if (samples.length === 1) {
+      const hr = samples[0].heartRate;
+      const zone = this.getZoneForHr(hr, zones, true);
+      zoneDurations[zone] = 60;
+      const totalDuration = 60;
+
+      return zones.map(z => ({
+        ...z,
+        duration: Math.round(zoneDurations[z.zone] * 10) / 10,
+        percentage: Math.round((zoneDurations[z.zone] / totalDuration) * 1000) / 10
+      }));
+    }
+
     let totalDuration = 0;
 
-    for (let i = 1; i < sortedSamples.length; i++) {
-      const prev = sortedSamples[i - 1];
-      const curr = sortedSamples[i];
+    for (let i = 1; i < samples.length; i++) {
+      const prev = samples[i - 1];
+      const curr = samples[i];
       const timeDiff = (curr.timestamp - prev.timestamp) / 1000;
-      const avgHr = (prev.heartRate + curr.heartRate) / 2;
+
+      if (timeDiff <= 0) continue;
 
       totalDuration += timeDiff;
 
-      for (const zone of zones) {
-        if (avgHr >= zone.minHr && avgHr < zone.maxHr) {
-          zoneDurations[zone.zone] += timeDiff;
-          break;
-        }
-      }
+      const avgHr = (prev.heartRate + curr.heartRate) / 2;
+      const zone = this.getZoneForHr(avgHr, zones, false);
+      zoneDurations[zone] += timeDiff;
     }
 
-    if (totalDuration === 0) totalDuration = 1;
+    if (totalDuration <= 0) {
+      const avgHr = calculateAverage(samples.map(s => s.heartRate));
+      const zone = this.getZoneForHr(avgHr, zones, true);
+      zoneDurations[zone] = 60;
+      totalDuration = 60;
+    }
 
     return zones.map(z => ({
       ...z,
       duration: Math.round(zoneDurations[z.zone] * 10) / 10,
-      percentage: Math.round((zoneDurations[z.zone] / totalDuration) * 1000) / 10
+      percentage: totalDuration > 0
+        ? Math.round((zoneDurations[z.zone] / totalDuration) * 1000) / 10
+        : 0
     }));
   }
 
   analyze(heartRateSamples: HeartRateSample[], userId?: string): HeartRateAnalysis {
-    const hrValues = heartRateSamples.map(s => s.heartRate);
+    const samples = this.normalizeSamples(heartRateSamples);
+
+    if (samples.length === 0) {
+      const userProfile = userId ? dataStore.getUserProfile(userId) : undefined;
+      const maxHr = this.calculateMaxHr(userProfile);
+      const restHr = this.calculateRestHr(userProfile);
+      const zones = this.getHeartRateZones(maxHr, restHr);
+      return {
+        avgHeartRate: 0,
+        maxHeartRate: 0,
+        minHeartRate: 0,
+        zones: zones.map(z => ({ ...z, duration: 0, percentage: 0 })),
+        trainingLoad: 0
+      };
+    }
+
+    const hrValues = samples.map(s => s.heartRate);
     const avgHeartRate = Math.round(calculateAverage(hrValues) * 10) / 10;
     const maxHeartRate = calculateMax(hrValues);
     const minHeartRate = calculateMin(hrValues);
-    const zones = this.calculateZones(heartRateSamples, userId);
-
-    const userProfile = userId ? dataStore.getUserProfile(userId) : undefined;
-    const maxHr = this.calculateMaxHr(userProfile);
-    const restHr = this.calculateRestHr(userProfile);
+    const zones = this.calculateZones(samples, userId);
 
     let trainingLoad = 0;
     for (const zone of zones) {
@@ -139,11 +204,15 @@ export class HeartRateAnalyzer {
     const hrSamples = 'heartRateSamples' in data ? data.heartRateSamples : [];
 
     if (!hrSamples || hrSamples.length === 0) {
+      const userProfile = dataStore.getUserProfile(record.userId);
+      const maxHr = this.calculateMaxHr(userProfile);
+      const restHr = this.calculateRestHr(userProfile);
+      const zones = this.getHeartRateZones(maxHr, restHr);
       return {
         avgHeartRate: 0,
         maxHeartRate: 0,
         minHeartRate: 0,
-        zones: [],
+        zones: zones.map(z => ({ ...z, duration: 0, percentage: 0 })),
         trainingLoad: 0
       };
     }
