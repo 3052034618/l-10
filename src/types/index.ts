@@ -380,6 +380,15 @@ export interface WeeklyReport {
   bestPerformances: BestPerformance[];
   recoveryAdvice: string[];
   sportDistribution: { sportType: SportType; duration: number; count: number }[];
+  ballContribution?: {
+    totalActions: number;
+    totalSuccessful: number;
+    overallSuccessRate: number;
+    actions: { actionType: string; count: number; successCount: number; successRate: number }[];
+    highIntensityDuration: number;
+    highIntensityPercentage: number;
+    bestActionPerformance?: { actionType: string; count: number; dateFormatted: string };
+  };
   trends: {
     metric: string;
     values: { day: number; value: number }[];
@@ -427,6 +436,49 @@ export interface CourseSummary {
   };
   bestPerformance?: BestPerformance;
   highIntensityDuration?: number;
+  memberCount?: number;
+  avgDurationPerUser?: number;
+  avgTrainingLoadPerUser?: number;
+  topPerformers?: {
+    rank: number;
+    userId: string;
+    userName?: string;
+    completionCount: number;
+    totalDuration: number;
+    totalTrainingLoad?: number;
+    totalBallActions?: number;
+  }[];
+  ballActionRanking?: {
+    actionType: string;
+    topUser?: {
+      userId: string;
+      userName?: string;
+      count: number;
+      successCount: number;
+      successRate: number;
+    };
+  }[];
+}
+
+export interface TrainingLoadTrend {
+  userId: string;
+  referenceDate: number;
+  weeklyLoads: {
+    weekStart: number;
+    weekEnd: number;
+    weekNumber: number;
+    label: string;
+    trainingLoad: number;
+    trainingCount: number;
+    totalDuration: number;
+  }[];
+  acuteLoad: number;
+  chronicLoad: number;
+  acwr: number;
+  riskLevel: 'low' | 'moderate' | 'high' | 'very_high';
+  riskDescription: string;
+  trend: 'increasing' | 'decreasing' | 'stable';
+  recommendation: string;
 }
 
 export interface AggregationOptions {

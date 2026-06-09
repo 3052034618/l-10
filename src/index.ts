@@ -7,7 +7,7 @@ import { performanceAnalyzer } from './modules/performance';
 import { motionAnalyzer, fatigueScorer } from './modules/fatigue';
 import { goalManager, teamRankingGenerator } from './modules/ranking';
 import { anomalyDetector } from './modules/anomaly';
-import { weeklyReportGenerator, dataAggregator } from './modules/report';
+import { weeklyReportGenerator, dataAggregator, trainingLoadTrendAnalyzer } from './modules/report';
 
 export class SmartSportsTrainingSDK {
   public store = dataStore;
@@ -21,6 +21,7 @@ export class SmartSportsTrainingSDK {
   public anomalies = anomalyDetector;
   public reports = weeklyReportGenerator;
   public aggregator = dataAggregator;
+  public loadTrend = trainingLoadTrendAnalyzer;
 
   constructor() {}
 

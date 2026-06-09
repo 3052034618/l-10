@@ -8,7 +8,8 @@ import {
   CourseSummary,
   AggregationOptions,
   SportType,
-  BallActionDetail
+  BallActionDetail,
+  TrainingLoadTrend
 } from '../types';
 import { dataStore } from '../store';
 import { getStartOfWeek, getEndOfWeek, getDayOfWeek, calculateAverage } from '../utils';
@@ -81,6 +82,7 @@ export class WeeklyReportGenerator {
     const loadChange = this.calculateLoadChange(trainingLoad, prevTrainingLoad);
 
     const bestPerformances = this.getWeeklyBestPerformances(records);
+    const ballContribution = this.calculateBallContribution(records);
     const recoveryAdvice = this.generateRecoveryAdvice(trainingLoad, records.length, loadChange, sportDistribution);
     const trends = this.calculateWeeklyTrends(records, weekStart);
 
@@ -97,6 +99,7 @@ export class WeeklyReportGenerator {
       trainingLoad: Math.round(trainingLoad),
       loadChange,
       bestPerformances,
+      ballContribution,
       recoveryAdvice,
       sportDistribution: Array.from(sportDistribution.entries()).map(([sportType, data]) => ({
         sportType,
@@ -227,6 +230,69 @@ export class WeeklyReportGenerator {
         return b.date - a.date;
       })
       .slice(0, 5);
+  }
+
+  private calculateBallContribution(records: any[]): WeeklyReport['ballContribution'] | undefined {
+    const ballRecords = records.filter(r => r.sportType === 'ball');
+    if (ballRecords.length === 0) return undefined;
+
+    const actionMap = new Map<string, { count: number; successCount: number; totalAttempts: number }>();
+    let totalActions = 0;
+    let totalSuccessful = 0;
+    let totalAttempts = 0;
+    let highIntensityDuration = 0;
+    let totalDuration = 0;
+
+    let bestAction: { actionType: string; count: number; date: number } | undefined;
+
+    for (const record of ballRecords) {
+      totalDuration += record.data.duration;
+      const analysis = motionAnalyzer.analyzeRecord(record.recordId);
+      
+      if (analysis && 'actions' in analysis) {
+        for (const action of analysis.actions) {
+          const existing = actionMap.get(action.actionType) || { count: 0, successCount: 0, totalAttempts: 0 };
+          existing.count += action.count;
+          existing.successCount += action.successCount;
+          existing.totalAttempts += action.totalAttempts || action.count;
+          actionMap.set(action.actionType, existing);
+
+          if (!bestAction || action.count > bestAction.count) {
+            bestAction = { actionType: action.actionType, count: action.count, date: record.startTime };
+          }
+        }
+        totalActions += analysis.totalActions;
+        totalSuccessful += analysis.totalSuccessful;
+        totalAttempts += analysis.actions.reduce((s: number, a: BallActionDetail) => s + (a.totalAttempts || a.count), 0);
+        
+        if ('highIntensityDuration' in analysis) {
+          highIntensityDuration += analysis.highIntensityDuration;
+        }
+      }
+    }
+
+    const actions = Array.from(actionMap.entries())
+      .map(([actionType, stats]) => ({
+        actionType,
+        count: stats.count,
+        successCount: stats.successCount,
+        successRate: stats.totalAttempts > 0 ? Math.round((stats.successCount / stats.totalAttempts) * 100) / 100 : 0
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return {
+      totalActions,
+      totalSuccessful,
+      overallSuccessRate: totalAttempts > 0 ? Math.round((totalSuccessful / totalAttempts) * 100) / 100 : 0,
+      actions,
+      highIntensityDuration: Math.round(highIntensityDuration),
+      highIntensityPercentage: totalDuration > 0 ? Math.round((highIntensityDuration / totalDuration) * 100) : 0,
+      bestActionPerformance: bestAction ? {
+        actionType: bestAction.actionType,
+        count: bestAction.count,
+        dateFormatted: this.formatDate(bestAction.date)
+      } : undefined
+    };
   }
 
   private formatTime(seconds: number): string {
@@ -567,6 +633,14 @@ export class DataAggregator {
     let totalBallAttempts = 0;
     let highIntensityDuration = 0;
 
+    const userStats = new Map<string, {
+      completionCount: number;
+      totalDuration: number;
+      totalTrainingLoad: number;
+      totalBallActions: number;
+      ballActions: Map<string, { count: number; successCount: number; totalAttempts: number }>;
+    }>();
+
     for (const record of records) {
       if ('distance' in record.data && record.data.distance) {
         totalDistance += record.data.distance;
@@ -574,9 +648,25 @@ export class DataAggregator {
       }
 
       const fatigue = fatigueScorer.calculate(record.recordId);
+      const load = fatigue?.score || 0;
       if (fatigue) {
         totalTrainingLoad += fatigue.score;
       }
+
+      const userId = record.userId;
+      if (!userStats.has(userId)) {
+        userStats.set(userId, {
+          completionCount: 0,
+          totalDuration: 0,
+          totalTrainingLoad: 0,
+          totalBallActions: 0,
+          ballActions: new Map()
+        });
+      }
+      const userStat = userStats.get(userId)!;
+      userStat.completionCount += 1;
+      userStat.totalDuration += record.data.duration;
+      userStat.totalTrainingLoad += load;
 
       if (record.sportType === 'ball') {
         const analysis = motionAnalyzer.analyzeRecord(record.recordId);
@@ -587,10 +677,18 @@ export class DataAggregator {
             existing.successCount += action.successCount;
             existing.totalAttempts += action.totalAttempts || action.count;
             ballActionMap.set(action.actionType, existing);
+
+            const userAction = userStat.ballActions.get(action.actionType) || { count: 0, successCount: 0, totalAttempts: 0 };
+            userAction.count += action.count;
+            userAction.successCount += action.successCount;
+            userAction.totalAttempts += action.totalAttempts || action.count;
+            userStat.ballActions.set(action.actionType, userAction);
           }
           totalBallActions += analysis.totalActions;
           totalBallSuccessful += analysis.totalSuccessful;
           totalBallAttempts += analysis.actions.reduce((s: number, a: BallActionDetail) => s + (a.totalAttempts || a.count), 0);
+          userStat.totalBallActions += analysis.totalActions;
+          
           if ('highIntensityDuration' in analysis) {
             highIntensityDuration += analysis.highIntensityDuration;
           }
@@ -601,6 +699,61 @@ export class DataAggregator {
     let bestPerformance: BestPerformance | undefined;
     if (records.length > 0) {
       bestPerformance = this.findCourseBestPerformance(records);
+    }
+
+    const memberCount = userStats.size;
+    const avgDurationPerUser = memberCount > 0 ? totalDuration / memberCount : 0;
+    const avgTrainingLoadPerUser = memberCount > 0 ? totalTrainingLoad / memberCount : 0;
+
+    const topPerformers: CourseSummary['topPerformers'] = [];
+    const sortedUsers = Array.from(userStats.entries()).sort((a, b) => {
+      if (b[1].totalTrainingLoad !== a[1].totalTrainingLoad) {
+        return b[1].totalTrainingLoad - a[1].totalTrainingLoad;
+      }
+      return b[1].completionCount - a[1].completionCount;
+    });
+
+    for (let i = 0; i < Math.min(5, sortedUsers.length); i++) {
+      const [userId, stats] = sortedUsers[i];
+      const user = dataStore.getUserProfile(userId);
+      topPerformers.push({
+        rank: i + 1,
+        userId,
+        userName: user?.name,
+        completionCount: stats.completionCount,
+        totalDuration: Math.round(stats.totalDuration),
+        totalTrainingLoad: Math.round(stats.totalTrainingLoad),
+        totalBallActions: stats.totalBallActions || undefined
+      });
+    }
+
+    let ballActionRanking: CourseSummary['ballActionRanking'] | undefined;
+    if (course.sportType === SportType.BALL && ballActionMap.size > 0) {
+      ballActionRanking = [];
+      for (const [actionType] of ballActionMap) {
+        let topUser: { userId: string; userName?: string; count: number; successCount: number; successRate: number } | undefined;
+        for (const [userId, stats] of userStats) {
+          const actionStat = stats.ballActions.get(actionType);
+          if (actionStat && (!topUser || actionStat.count > topUser.count)) {
+            const user = dataStore.getUserProfile(userId);
+            topUser = {
+              userId,
+              userName: user?.name,
+              count: actionStat.count,
+              successCount: actionStat.successCount,
+              successRate: actionStat.totalAttempts > 0 
+                ? Math.round((actionStat.successCount / actionStat.totalAttempts) * 100) / 100 
+                : 0
+            };
+          }
+        }
+        ballActionRanking.push({ actionType, topUser });
+      }
+      ballActionRanking.sort((a, b) => {
+        const aCount = ballActionMap.get(a.actionType)?.count || 0;
+        const bCount = ballActionMap.get(b.actionType)?.count || 0;
+        return bCount - aCount;
+      });
     }
 
     const avgTrainingLoad = records.length > 0 ? totalTrainingLoad / records.length : 0;
@@ -616,7 +769,12 @@ export class DataAggregator {
       avgTrainingLoad: Math.round(avgTrainingLoad),
       totalTrainingLoad: Math.round(totalTrainingLoad),
       difficultyRating: course.difficulty,
-      bestPerformance
+      bestPerformance,
+      memberCount,
+      avgDurationPerUser: Math.round(avgDurationPerUser),
+      avgTrainingLoadPerUser: Math.round(avgTrainingLoadPerUser),
+      topPerformers: topPerformers.length > 0 ? topPerformers : undefined,
+      ballActionRanking
     };
 
     if (hasDistance) {
@@ -763,3 +921,142 @@ export class DataAggregator {
 }
 
 export const dataAggregator = new DataAggregator();
+
+export class TrainingLoadTrendAnalyzer {
+  getTrainingLoadTrend(userId: string, referenceDate: number = Date.now()): TrainingLoadTrend {
+    const weeklyLoads: TrainingLoadTrend['weeklyLoads'] = [];
+
+    for (let i = 3; i >= 0; i--) {
+      const weekStart = getStartOfWeek(referenceDate) - i * 7 * 24 * 3600 * 1000;
+      const weekEnd = getEndOfWeek(referenceDate) - i * 7 * 24 * 3600 * 1000;
+      
+      const records = dataStore.getTrainingRecordsByUser(userId, {
+        startDate: weekStart,
+        endDate: weekEnd
+      });
+
+      let trainingLoad = 0;
+      let totalDuration = 0;
+      
+      for (const record of records) {
+        totalDuration += record.data.duration;
+        const fatigue = fatigueScorer.calculate(record.recordId);
+        if (fatigue) {
+          trainingLoad += fatigue.score;
+        }
+      }
+
+      const weekNum = 4 - i;
+      const label = i === 0 ? '本周' : `${i}周前`;
+
+      weeklyLoads.push({
+        weekStart,
+        weekEnd,
+        weekNumber: weekNum,
+        label,
+        trainingLoad: Math.round(trainingLoad),
+        trainingCount: records.length,
+        totalDuration: Math.round(totalDuration)
+      });
+    }
+
+    const acuteLoad = weeklyLoads[3]?.trainingLoad || 0;
+    const loads = weeklyLoads.map(w => w.trainingLoad);
+    const nonZeroWeeks = loads.filter(l => l > 0).length;
+    const chronicLoad = nonZeroWeeks > 0 
+      ? loads.reduce((a, b) => a + b, 0) / nonZeroWeeks 
+      : 0;
+
+    let acwr = 0;
+    let riskLevel: TrainingLoadTrend['riskLevel'] = 'low';
+    let riskDescription = '';
+    let recommendation = '';
+
+    const totalWeeksWithData = weeklyLoads.filter(w => w.trainingCount > 0).length;
+
+    if (chronicLoad > 0 && nonZeroWeeks >= 2) {
+      acwr = Math.round((acuteLoad / chronicLoad) * 100) / 100;
+
+      if (acwr < 0.5) {
+        riskLevel = 'low';
+        riskDescription = '负荷偏低，训练效果可能不足';
+        recommendation = '训练量偏低，建议逐步增加训练负荷以获得更好的训练效果';
+      } else if (acwr < 0.8) {
+        riskLevel = 'low';
+        riskDescription = '负荷合理，处于最佳适应区间';
+        recommendation = '训练负荷适中，保持当前节奏，稳步提升能力';
+      } else if (acwr < 1.3) {
+        riskLevel = 'moderate';
+        riskDescription = '负荷适中略高，注意恢复';
+        recommendation = '训练负荷适中偏高，注意训练后充分恢复，避免过度疲劳';
+      } else if (acwr < 1.5) {
+        riskLevel = 'high';
+        riskDescription = '负荷偏高，过度训练风险增加';
+        recommendation = '训练负荷较高，建议适当降低训练强度，增加恢复训练';
+      } else {
+        riskLevel = 'very_high';
+        riskDescription = '负荷过高，过度训练风险很大';
+        recommendation = '训练负荷过高，建议立即减少训练量，安排主动恢复，防止运动损伤';
+      }
+    } else if (totalWeeksWithData === 0) {
+      riskLevel = 'low';
+      riskDescription = '暂无训练数据';
+      recommendation = '还没有训练记录，建议从轻松的运动开始';
+    } else if (totalWeeksWithData === 1) {
+      riskLevel = 'low';
+      riskDescription = '刚开始训练，逐步适应中';
+      recommendation = '刚开始训练，循序渐进，让身体逐步适应运动节奏';
+    } else {
+      riskLevel = 'low';
+      riskDescription = '数据不足，建议持续训练观察趋势';
+      recommendation = '训练数据较少，建议保持规律训练，形成稳定的训练模式';
+    }
+
+    const recentTrend = this.calculateTrend(loads);
+    const trend: 'increasing' | 'decreasing' | 'stable' = 
+      recentTrend === 'up' ? 'increasing' : 
+      recentTrend === 'down' ? 'decreasing' : 'stable';
+
+    if (totalWeeksWithData >= 2) {
+      if (trend === 'increasing' && riskLevel === 'low') {
+        recommendation = '训练负荷稳步增加，保持良好节奏，注意身体反应';
+      } else if (trend === 'decreasing') {
+        recommendation = '训练负荷有所下降，如果是主动调整没问题，否则建议保持训练连续性';
+      }
+    }
+
+    return {
+      userId,
+      referenceDate,
+      weeklyLoads,
+      acuteLoad: Math.round(acuteLoad),
+      chronicLoad: Math.round(chronicLoad),
+      acwr,
+      riskLevel,
+      riskDescription,
+      trend,
+      recommendation
+    };
+  }
+
+  private calculateTrend(values: number[]): 'up' | 'down' | 'stable' {
+    const nonZero = values.filter(v => v > 0);
+    if (nonZero.length < 2) return 'stable';
+
+    const mid = Math.floor(nonZero.length / 2);
+    const firstHalf = nonZero.slice(0, mid);
+    const secondHalf = nonZero.slice(mid);
+
+    const avgFirst = calculateAverage(firstHalf);
+    const avgSecond = calculateAverage(secondHalf);
+
+    if (avgFirst === 0) return 'stable';
+    const diff = (avgSecond - avgFirst) / avgFirst;
+
+    if (diff > 0.15) return 'up';
+    if (diff < -0.15) return 'down';
+    return 'stable';
+  }
+}
+
+export const trainingLoadTrendAnalyzer = new TrainingLoadTrendAnalyzer();

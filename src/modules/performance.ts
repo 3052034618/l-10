@@ -232,7 +232,7 @@ export class PerformanceAnalyzer {
       intensityFactor = normalizedPower / ftp;
       const durationSeconds = this.calculateTotalDuration(filteredSamples);
       const durationHours = durationSeconds / 3600;
-      trainingStressScore = (durationHours * normalizedPower * intensityFactor) / (ftp * 36) * 100;
+      trainingStressScore = Math.pow(intensityFactor, 2) * durationHours * 100;
     }
 
     if (avgPower > 0) {
@@ -243,7 +243,7 @@ export class PerformanceAnalyzer {
     const powerZones = [
       { range: '主动恢复', shortRange: '0-55% FTP', min: 0, max: effectiveFtp * 0.55 },
       { range: '耐力骑', shortRange: '55-75% FTP', min: effectiveFtp * 0.55, max: effectiveFtp * 0.75 },
-      { range: ' tempo', shortRange: '75-90% FTP', min: effectiveFtp * 0.75, max: effectiveFtp * 0.90 },
+      { range: 'Tempo', shortRange: '75-90% FTP', min: effectiveFtp * 0.75, max: effectiveFtp * 0.90 },
       { range: '阈值', shortRange: '90-105% FTP', min: effectiveFtp * 0.90, max: effectiveFtp * 1.05 },
       { range: 'VO2max', shortRange: '105-120% FTP', min: effectiveFtp * 1.05, max: effectiveFtp * 1.20 },
       { range: '无氧能力', shortRange: '120-150% FTP', min: effectiveFtp * 1.20, max: effectiveFtp * 1.50 },
