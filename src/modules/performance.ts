@@ -186,7 +186,7 @@ export class PerformanceAnalyzer {
       }
 
       const windowCount = i - windowStartIndex + 1;
-      if (windowCount >= 5) {
+      if (windowCount >= 15) {
         const avgFourth = windowSum / windowCount;
         windowPowers.push(Math.pow(avgFourth, 0.25));
       }
@@ -196,8 +196,8 @@ export class PerformanceAnalyzer {
       return calculateAverage(sorted.map(s => s.power));
     }
 
-    const sortedWindowPowers = [...windowPowers].sort((a, b) => a - b);
-    return percentile(sortedWindowPowers, 95);
+    const avgOfWindows = windowPowers.reduce((a, b) => a + b, 0) / windowPowers.length;
+    return avgOfWindows;
   }
 
   analyzePower(data: CyclingTrainingData, ftp?: number): PowerAnalysis {
@@ -218,9 +218,10 @@ export class PerformanceAnalyzer {
 
     const filteredSamples = this.removePowerSpikes(normalizedSamples, 3.5);
 
-    const powerValues = filteredSamples.map(s => s.power);
-    const avgPower = calculateAverage(powerValues);
-    const maxPower = powerValues.length > 0 ? Math.max(...powerValues) : 0;
+    const filteredPowerValues = filteredSamples.map(s => s.power);
+    const avgPower = calculateAverage(filteredPowerValues);
+    const rawPowerValues = normalizedSamples.map(s => s.power);
+    const maxPower = rawPowerValues.length > 0 ? Math.max(...rawPowerValues) : 0;
 
     const normalizedPower = this.calculateNormalizedPower(filteredSamples);
 
@@ -273,7 +274,7 @@ export class PerformanceAnalyzer {
       };
     });
 
-    const peakPowerCurve = this.calculatePeakPowerCurve(filteredSamples);
+    const peakPowerCurve = this.calculatePeakPowerCurve(normalizedSamples);
 
     return {
       avgPower: Math.round(avgPower),

@@ -389,6 +389,14 @@ export interface WeeklyReport {
     highIntensityPercentage: number;
     bestActionPerformance?: { actionType: string; count: number; dateFormatted: string };
   };
+  loadInsights?: {
+    primarySource: string;
+    sourceBreakdown: { sportType: SportType; sportName: string; load: number; percentage: number }[];
+    riskTriggers: string[];
+    recommendedAdjustment: string;
+    adjustmentMagnitude: 'none' | 'small' | 'moderate' | 'large';
+    adjustmentDirection: 'increase' | 'maintain' | 'decrease';
+  };
   trends: {
     metric: string;
     values: { day: number; value: number }[];
@@ -458,6 +466,36 @@ export interface CourseSummary {
       successRate: number;
     };
   }[];
+  memberDetails?: {
+    userId: string;
+    userName?: string;
+    completionCount: number;
+    completionRate: number;
+    totalDuration: number;
+    avgDuration: number;
+    totalTrainingLoad: number;
+    avgTrainingLoad: number;
+    loadTrend: 'up' | 'down' | 'stable';
+    bestPerformance?: BestPerformance;
+    ballActions?: { actionType: string; count: number; successCount: number; successRate: number }[];
+    ballWeakPoints?: string[];
+  }[];
+  ballProgressRanking?: {
+    actionType: string;
+    mostImproved?: {
+      userId: string;
+      userName?: string;
+      improvementRate: number;
+      startValue: number;
+      endValue: number;
+    };
+    topTotal?: {
+      userId: string;
+      userName?: string;
+      totalCount: number;
+      successRate: number;
+    };
+  }[];
 }
 
 export interface TrainingLoadTrend {
@@ -479,6 +517,14 @@ export interface TrainingLoadTrend {
   riskDescription: string;
   trend: 'increasing' | 'decreasing' | 'stable';
   recommendation: string;
+  insights?: {
+    loadPattern: 'empty' | 'start' | 'building' | 'stable' | 'tapering' | 'overreaching';
+    patternDescription: string;
+    keyDrivers: string[];
+    riskFactors: string[];
+    suggestedAdjustment: string;
+    adjustmentPercentage: number;
+  };
 }
 
 export interface AggregationOptions {

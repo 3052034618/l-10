@@ -83,6 +83,7 @@ export class WeeklyReportGenerator {
 
     const bestPerformances = this.getWeeklyBestPerformances(records);
     const ballContribution = this.calculateBallContribution(records);
+    const loadInsights = this.calculateLoadInsights(trainingLoad, records.length, loadChange, sportDistribution);
     const recoveryAdvice = this.generateRecoveryAdvice(trainingLoad, records.length, loadChange, sportDistribution);
     const trends = this.calculateWeeklyTrends(records, weekStart);
 
@@ -100,6 +101,7 @@ export class WeeklyReportGenerator {
       loadChange,
       bestPerformances,
       ballContribution,
+      loadInsights,
       recoveryAdvice,
       sportDistribution: Array.from(sportDistribution.entries()).map(([sportType, data]) => ({
         sportType,
@@ -292,6 +294,122 @@ export class WeeklyReportGenerator {
         count: bestAction.count,
         dateFormatted: this.formatDate(bestAction.date)
       } : undefined
+    };
+  }
+
+  private calculateLoadInsights(
+    trainingLoad: number,
+    trainingCount: number,
+    loadChange: TrainingLoadChange,
+    sportDistribution: Map<SportType, { duration: number; count: number }>
+  ): WeeklyReport['loadInsights'] {
+    const sportNames: Record<SportType, string> = {
+      [SportType.RUNNING]: '跑步',
+      [SportType.CYCLING]: '骑行',
+      [SportType.STRENGTH]: '力量',
+      [SportType.BALL]: '球类'
+    };
+
+    const sourceBreakdown: { sportType: SportType; sportName: string; load: number; percentage: number }[] = [];
+
+    const sports = Array.from(sportDistribution.entries());
+    if (sports.length === 0 || trainingLoad === 0) {
+      return {
+        primarySource: '无训练数据',
+        sourceBreakdown: [],
+        riskTriggers: ['本周暂无训练记录'],
+        recommendedAdjustment: '建议从轻松的运动开始，逐步建立训练习惯',
+        adjustmentMagnitude: 'none',
+        adjustmentDirection: 'maintain'
+      };
+    }
+
+    const loadPerSport = trainingCount > 0 ? trainingLoad / trainingCount : 0;
+    for (const [sportType, data] of sports) {
+      const estimatedLoad = data.count * loadPerSport;
+      sourceBreakdown.push({
+        sportType,
+        sportName: sportNames[sportType] || sportType,
+        load: Math.round(estimatedLoad),
+        percentage: trainingLoad > 0 ? Math.round((estimatedLoad / trainingLoad) * 100) : 0
+      });
+    }
+    sourceBreakdown.sort((a, b) => b.load - a.load);
+
+    const primarySource = sourceBreakdown[0]?.sportName || '综合训练';
+
+    const riskTriggers: string[] = [];
+    let adjustmentDirection: 'increase' | 'maintain' | 'decrease' = 'maintain';
+    let adjustmentMagnitude: 'none' | 'small' | 'moderate' | 'large' = 'none';
+    let recommendedAdjustment = '';
+
+    if (trainingCount === 0) {
+      riskTriggers.push('本周无训练记录');
+      adjustmentDirection = 'increase';
+      adjustmentMagnitude = 'small';
+      recommendedAdjustment = '本周无训练，建议安排 2-3 次轻量运动，逐步恢复状态';
+    } else if (loadChange.changePercentage > 50) {
+      riskTriggers.push('周负荷激增超过 50%');
+      riskTriggers.push('过度训练风险显著升高');
+      adjustmentDirection = 'decrease';
+      adjustmentMagnitude = 'large';
+      recommendedAdjustment = '负荷增加过快，建议下周减少 30-50% 训练量，优先保证恢复';
+    } else if (loadChange.changePercentage > 25) {
+      riskTriggers.push('周负荷增加超过 25%');
+      adjustmentDirection = 'decrease';
+      adjustmentMagnitude = 'moderate';
+      recommendedAdjustment = '负荷增加偏快，建议下周减少 15-25% 训练量，注意身体反应';
+    } else if (loadChange.changePercentage > 10) {
+      riskTriggers.push('周负荷稳步增加');
+      adjustmentDirection = 'maintain';
+      adjustmentMagnitude = 'small';
+      recommendedAdjustment = '负荷增加在合理范围内，保持当前节奏，确保训练后充分恢复';
+    } else if (loadChange.changePercentage < -30) {
+      riskTriggers.push('周负荷下降明显');
+      adjustmentDirection = 'increase';
+      adjustmentMagnitude = 'moderate';
+      recommendedAdjustment = '负荷下降较多，建议下周逐步增加 20-30% 训练量，回到正常水平';
+    } else if (loadChange.changePercentage < -10) {
+      riskTriggers.push('周负荷有所下降');
+      adjustmentDirection = 'increase';
+      adjustmentMagnitude = 'small';
+      recommendedAdjustment = '负荷略有下降，如非主动减量，建议下周适度增加训练量';
+    } else {
+      riskTriggers.push('负荷稳定，处于良好适应区间');
+      adjustmentDirection = 'maintain';
+      adjustmentMagnitude = 'none';
+      recommendedAdjustment = '训练负荷稳定，保持当前节奏，可持续提升';
+    }
+
+    if (trainingCount >= 6) {
+      riskTriggers.push('训练频次过高，可能影响恢复');
+      if (adjustmentDirection !== 'decrease') {
+        adjustmentDirection = 'decrease';
+        adjustmentMagnitude = 'small';
+        recommendedAdjustment = '训练频次较高，建议安排 1-2 天完全休息日，防止过度疲劳';
+      }
+    }
+
+    if (trainingLoad > 400) {
+      riskTriggers.push('周训练负荷较高');
+      if (adjustmentMagnitude === 'none' || adjustmentMagnitude === 'small') {
+        adjustmentMagnitude = 'moderate';
+        adjustmentDirection = 'decrease';
+        recommendedAdjustment = '训练负荷偏高，建议下周适当减少强度训练，增加恢复训练比例';
+      }
+    }
+
+    if (sports.length >= 3 && trainingCount >= 3) {
+      riskTriggers.unshift('混合运动模式，训练内容丰富');
+    }
+
+    return {
+      primarySource: primarySource + '训练',
+      sourceBreakdown,
+      riskTriggers,
+      recommendedAdjustment,
+      adjustmentMagnitude,
+      adjustmentDirection
     };
   }
 
@@ -759,6 +877,140 @@ export class DataAggregator {
     const avgTrainingLoad = records.length > 0 ? totalTrainingLoad / records.length : 0;
     const avgDistance = records.length > 0 ? totalDistance / records.length : 0;
 
+    const memberDetails: CourseSummary['memberDetails'] = [];
+    const expectedCompletions = 3;
+    
+    for (const [userId, stats] of userStats) {
+      const user = dataStore.getUserProfile(userId);
+      const userRecords = records.filter(r => r.userId === userId)
+        .sort((a, b) => a.startTime - b.startTime);
+
+      const firstRecord = userRecords[0];
+      const lastRecord = userRecords[userRecords.length - 1];
+      const firstLoad = firstRecord ? fatigueScorer.calculate(firstRecord.recordId)?.score || 0 : 0;
+      const lastLoad = lastRecord ? fatigueScorer.calculate(lastRecord.recordId)?.score || 0 : 0;
+      let loadTrend: 'up' | 'down' | 'stable' = 'stable';
+      if (firstLoad > 0 && lastLoad - firstLoad > firstLoad * 0.1) {
+        loadTrend = 'up';
+      } else if (firstLoad > 0 && lastLoad - firstLoad < -firstLoad * 0.1) {
+        loadTrend = 'down';
+      }
+
+      const bestPerf = userRecords.length > 0 ? this.findCourseBestPerformance(userRecords) : undefined;
+
+      const userBallActions: { actionType: string; count: number; successCount: number; successRate: number }[] = [];
+      const ballWeakPoints: string[] = [];
+      
+      if (stats.ballActions.size > 0) {
+        for (const [actionType, actionStat] of stats.ballActions) {
+          const successRate = actionStat.totalAttempts > 0 
+            ? actionStat.successCount / actionStat.totalAttempts 
+            : 0;
+          userBallActions.push({
+            actionType,
+            count: actionStat.count,
+            successCount: actionStat.successCount,
+            successRate: Math.round(successRate * 100) / 100
+          });
+          
+          if (successRate < 0.6 && actionStat.count >= 5) {
+            ballWeakPoints.push(`${actionType}（成功率${Math.round(successRate * 100)}%）`);
+          }
+        }
+        userBallActions.sort((a, b) => b.count - a.count);
+      }
+
+      memberDetails.push({
+        userId,
+        userName: user?.name,
+        completionCount: stats.completionCount,
+        completionRate: Math.round((stats.completionCount / expectedCompletions) * 100),
+        totalDuration: Math.round(stats.totalDuration),
+        avgDuration: stats.completionCount > 0 ? Math.round(stats.totalDuration / stats.completionCount) : 0,
+        totalTrainingLoad: Math.round(stats.totalTrainingLoad),
+        avgTrainingLoad: stats.completionCount > 0 ? Math.round(stats.totalTrainingLoad / stats.completionCount) : 0,
+        loadTrend,
+        bestPerformance: bestPerf,
+        ballActions: userBallActions.length > 0 ? userBallActions : undefined,
+        ballWeakPoints: ballWeakPoints.length > 0 ? ballWeakPoints : undefined
+      });
+    }
+    memberDetails.sort((a, b) => b.totalTrainingLoad - a.totalTrainingLoad);
+
+    let ballProgressRanking: CourseSummary['ballProgressRanking'] | undefined;
+    if (course.sportType === SportType.BALL && ballActionMap.size > 0 && memberCount >= 2) {
+      ballProgressRanking = [];
+      for (const [actionType] of ballActionMap) {
+        let mostImproved: {
+          userId: string;
+          userName?: string;
+          improvementRate: number;
+          startValue: number;
+          endValue: number;
+        } | undefined;
+        let topTotal: {
+          userId: string;
+          userName?: string;
+          totalCount: number;
+          successRate: number;
+        } | undefined;
+
+        for (const member of memberDetails) {
+          const userAction = member.ballActions?.find(a => a.actionType === actionType);
+          if (userAction) {
+            if (!topTotal || userAction.count > topTotal.totalCount) {
+              topTotal = {
+                userId: member.userId,
+                userName: member.userName,
+                totalCount: userAction.count,
+                successRate: userAction.successRate
+              };
+            }
+          }
+
+          const userRecords = records.filter(r => r.userId === member.userId)
+            .sort((a, b) => a.startTime - b.startTime);
+          
+          if (userRecords.length >= 2) {
+            const firstAnalysis = motionAnalyzer.analyzeRecord(userRecords[0].recordId);
+            const lastAnalysis = motionAnalyzer.analyzeRecord(userRecords[userRecords.length - 1].recordId);
+            
+            if (firstAnalysis && 'actions' in firstAnalysis && lastAnalysis && 'actions' in lastAnalysis) {
+              const firstAction = firstAnalysis.actions.find(a => a.actionType === actionType);
+              const lastAction = lastAnalysis.actions.find(a => a.actionType === actionType);
+              
+              if (firstAction && lastAction && firstAction.successRate > 0) {
+                const improvement = (lastAction.successRate - firstAction.successRate) / firstAction.successRate;
+                if (!mostImproved || improvement > mostImproved.improvementRate) {
+                  const user = dataStore.getUserProfile(member.userId);
+                  mostImproved = {
+                    userId: member.userId,
+                    userName: user?.name,
+                    improvementRate: Math.round(improvement * 100) / 100,
+                    startValue: Math.round(firstAction.successRate * 100),
+                    endValue: Math.round(lastAction.successRate * 100)
+                  };
+                }
+              }
+            }
+          }
+        }
+
+        if (topTotal || mostImproved) {
+          ballProgressRanking.push({
+            actionType,
+            mostImproved,
+            topTotal
+          });
+        }
+      }
+      ballProgressRanking.sort((a, b) => {
+        const aCount = ballActionMap.get(a.actionType)?.count || 0;
+        const bCount = ballActionMap.get(b.actionType)?.count || 0;
+        return bCount - aCount;
+      });
+    }
+
     const result: CourseSummary = {
       courseId,
       courseName: course.name,
@@ -774,7 +1026,9 @@ export class DataAggregator {
       avgDurationPerUser: Math.round(avgDurationPerUser),
       avgTrainingLoadPerUser: Math.round(avgTrainingLoadPerUser),
       topPerformers: topPerformers.length > 0 ? topPerformers : undefined,
-      ballActionRanking
+      ballActionRanking,
+      memberDetails: memberDetails.length > 0 ? memberDetails : undefined,
+      ballProgressRanking
     };
 
     if (hasDistance) {
@@ -1025,6 +1279,8 @@ export class TrainingLoadTrendAnalyzer {
       }
     }
 
+    const insights = this.generateTrendInsights(weeklyLoads, acwr, riskLevel, trend, totalWeeksWithData);
+
     return {
       userId,
       referenceDate,
@@ -1035,7 +1291,100 @@ export class TrainingLoadTrendAnalyzer {
       riskLevel,
       riskDescription,
       trend,
-      recommendation
+      recommendation,
+      insights
+    };
+  }
+
+  private generateTrendInsights(
+    weeklyLoads: TrainingLoadTrend['weeklyLoads'],
+    acwr: number,
+    riskLevel: TrainingLoadTrend['riskLevel'],
+    trend: 'increasing' | 'decreasing' | 'stable',
+    weeksWithData: number
+  ): TrainingLoadTrend['insights'] {
+    const loads = weeklyLoads.map(w => w.trainingLoad);
+    const latestLoad = loads[loads.length - 1] || 0;
+
+    let loadPattern: 'empty' | 'start' | 'building' | 'stable' | 'tapering' | 'overreaching' = 'empty';
+    let patternDescription = '';
+    const keyDrivers: string[] = [];
+    const riskFactors: string[] = [];
+    let suggestedAdjustment = '';
+    let adjustmentPercentage = 0;
+
+    if (weeksWithData === 0) {
+      loadPattern = 'empty';
+      patternDescription = '暂无训练数据，处于初始状态';
+      keyDrivers.push('未开始训练或数据不足');
+      suggestedAdjustment = '从低强度训练开始，逐步建立运动习惯';
+      adjustmentPercentage = 0;
+    } else if (weeksWithData === 1) {
+      loadPattern = 'start';
+      patternDescription = '刚开始训练，处于适应期';
+      keyDrivers.push('开始建立训练习惯');
+      keyDrivers.push('身体正在适应运动刺激');
+      suggestedAdjustment = '保持当前训练量，让身体逐步适应，不要急于加量';
+      adjustmentPercentage = 0;
+    } else if (trend === 'increasing' && acwr > 1.3) {
+      loadPattern = 'overreaching';
+      patternDescription = '负荷激增，存在过度训练倾向';
+      keyDrivers.push('近期训练量快速增加');
+      keyDrivers.push('急性负荷显著高于慢性负荷');
+      riskFactors.push('过度训练风险高');
+      riskFactors.push('运动损伤风险上升');
+      riskFactors.push('恢复时间可能不足');
+      suggestedAdjustment = '立即减少训练量，安排主动恢复，防止过度训练';
+      adjustmentPercentage = -30;
+    } else if (trend === 'increasing' && acwr > 1.0) {
+      loadPattern = 'building';
+      patternDescription = '处于稳步提升阶段，负荷合理增加';
+      keyDrivers.push('训练量持续增加');
+      keyDrivers.push('身体适应良好');
+      if (acwr > 1.2) {
+        riskFactors.push('负荷增长偏快，注意监控身体状态');
+      }
+      suggestedAdjustment = '保持当前增长节奏，确保充分恢复，持续稳步提升';
+      adjustmentPercentage = acwr > 1.2 ? -10 : 0;
+    } else if (trend === 'stable' && acwr >= 0.8 && acwr <= 1.2) {
+      loadPattern = 'stable';
+      patternDescription = '负荷稳定，处于良好适应状态';
+      keyDrivers.push('训练节奏稳定');
+      keyDrivers.push('身体适应良好');
+      suggestedAdjustment = '保持当前训练模式，可尝试小幅增加强度以突破平台期';
+      adjustmentPercentage = 5;
+    } else if (trend === 'decreasing' && acwr < 0.6) {
+      loadPattern = 'tapering';
+      patternDescription = '负荷显著下降，可能在减量调整或恢复';
+      keyDrivers.push('训练量明显减少');
+      if (latestLoad > 0) {
+        keyDrivers.push('处于主动恢复或赛前减量阶段');
+      } else {
+        riskFactors.push('训练连续性受影响');
+      }
+      suggestedAdjustment = '如果是主动减量，保持低强度活动维持状态；如非主动，建议逐步恢复训练量';
+      adjustmentPercentage = latestLoad > 0 ? 0 : 15;
+    } else {
+      loadPattern = 'building';
+      patternDescription = '训练模式正在形成中';
+      keyDrivers.push('训练规律性有待加强');
+      suggestedAdjustment = '建立规律的训练计划，保持稳定的运动频次';
+      adjustmentPercentage = 10;
+    }
+
+    if (riskLevel === 'high' || riskLevel === 'very_high') {
+      if (!riskFactors.includes('过度训练风险高')) {
+        riskFactors.push('过度训练风险较高');
+      }
+    }
+
+    return {
+      loadPattern,
+      patternDescription,
+      keyDrivers,
+      riskFactors,
+      suggestedAdjustment,
+      adjustmentPercentage
     };
   }
 
