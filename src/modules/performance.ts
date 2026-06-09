@@ -5,7 +5,8 @@ import {
   RunningTrainingData,
   CyclingTrainingData,
   TrainingRecord,
-  PowerSample
+  PowerSample,
+  PeakPowerPoint
 } from '../types';
 import { dataStore } from '../store';
 import { calculateAverage, calculateStandardDeviation, percentile, calculateDistance } from '../utils';
@@ -272,6 +273,8 @@ export class PerformanceAnalyzer {
       };
     });
 
+    const peakPowerCurve = this.calculatePeakPowerCurve(filteredSamples);
+
     return {
       avgPower: Math.round(avgPower),
       maxPower: Math.round(maxPower),
@@ -279,7 +282,8 @@ export class PerformanceAnalyzer {
       powerDistribution,
       trainingStressScore: trainingStressScore ? Math.round(trainingStressScore * 10) / 10 : undefined,
       intensityFactor: intensityFactor ? Math.round(intensityFactor * 1000) / 1000 : undefined,
-      variabilityIndex: variabilityIndex ? Math.round(variabilityIndex * 1000) / 1000 : undefined
+      variabilityIndex: variabilityIndex ? Math.round(variabilityIndex * 1000) / 1000 : undefined,
+      peakPowerCurve
     };
   }
 
@@ -289,6 +293,69 @@ export class PerformanceAnalyzer {
     }
     const sorted = [...samples].sort((a, b) => a.timestamp - b.timestamp);
     return (sorted[sorted.length - 1].timestamp - sorted[0].timestamp) / 1000;
+  }
+
+  private calculatePeakPower(samples: PowerSample[], windowSeconds: number): number {
+    if (samples.length < 2) return samples.length > 0 ? samples[0].power : 0;
+
+    const sorted = [...samples].sort((a, b) => a.timestamp - b.timestamp);
+    const totalDuration = this.calculateTotalDuration(samples);
+    
+    if (totalDuration < windowSeconds) {
+      const avgPower = calculateAverage(sorted.map(s => s.power));
+      return avgPower;
+    }
+
+    let maxAvgPower = 0;
+    const windowMs = windowSeconds * 1000;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const windowEnd = sorted[i].timestamp + windowMs;
+      let sumPower = 0;
+      let count = 0;
+      
+      for (let j = i; j < sorted.length && sorted[j].timestamp < windowEnd; j++) {
+        sumPower += sorted[j].power;
+        count++;
+      }
+      
+      if (count > 0) {
+        const avg = sumPower / count;
+        if (avg > maxAvgPower) {
+          maxAvgPower = avg;
+        }
+      }
+    }
+
+    return maxAvgPower;
+  }
+
+  private calculatePeakPowerCurve(samples: PowerSample[], weight?: number): PeakPowerPoint[] {
+    const durations = [
+      { seconds: 5, label: '5秒' },
+      { seconds: 30, label: '30秒' },
+      { seconds: 60, label: '1分钟' },
+      { seconds: 300, label: '5分钟' },
+      { seconds: 1200, label: '20分钟' },
+      { seconds: 3600, label: '60分钟' }
+    ];
+
+    const curve: PeakPowerPoint[] = [];
+    const totalDuration = this.calculateTotalDuration(samples);
+
+    for (const d of durations) {
+      if (totalDuration >= d.seconds * 0.8) {
+        const power = this.calculatePeakPower(samples, d.seconds);
+        curve.push({
+          duration: d.seconds,
+          durationLabel: d.label,
+          power: Math.round(power),
+          wattsPerKg: weight ? Math.round((power / weight) * 100) / 100 : undefined
+        });
+      }
+    }
+
+    return curve;
   }
 
   analyzeRecordPace(recordId: string): PaceAnalysis | null {

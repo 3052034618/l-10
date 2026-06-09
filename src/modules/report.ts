@@ -7,12 +7,13 @@ import {
   TeamRankingEntry,
   CourseSummary,
   AggregationOptions,
-  SportType
+  SportType,
+  BallActionDetail
 } from '../types';
 import { dataStore } from '../store';
 import { getStartOfWeek, getEndOfWeek, getDayOfWeek, calculateAverage } from '../utils';
 import { heartRateAnalyzer } from './heartRate';
-import { fatigueScorer } from './fatigue';
+import { fatigueScorer, motionAnalyzer } from './fatigue';
 import { teamRankingGenerator } from './ranking';
 
 export class WeeklyReportGenerator {
@@ -80,7 +81,7 @@ export class WeeklyReportGenerator {
     const loadChange = this.calculateLoadChange(trainingLoad, prevTrainingLoad);
 
     const bestPerformances = this.getWeeklyBestPerformances(records);
-    const recoveryAdvice = this.generateRecoveryAdvice(trainingLoad, records.length);
+    const recoveryAdvice = this.generateRecoveryAdvice(trainingLoad, records.length, loadChange, sportDistribution);
     const trends = this.calculateWeeklyTrends(records, weekStart);
 
     const summary = this.generateSummary(totalTrainingDays, totalDuration, loadChange, sportDistribution);
@@ -251,23 +252,51 @@ export class WeeklyReportGenerator {
     return `${month}月${day}日`;
   }
 
-  private generateRecoveryAdvice(trainingLoad: number, trainingCount: number): string[] {
+  private generateRecoveryAdvice(
+    trainingLoad: number,
+    trainingCount: number,
+    loadChange: TrainingLoadChange,
+    sportDistribution: Map<SportType, { duration: number; count: number }>
+  ): string[] {
     const advice: string[] = [];
+    const sports = Array.from(sportDistribution.keys());
+
+    if (trainingCount === 0) {
+      advice.push('本周暂无训练记录，建议保持规律运动习惯');
+      advice.push('可以从一次轻松的慢跑或骑行开始新的一周');
+      return advice;
+    }
 
     if (trainingLoad > 300) {
-      advice.push('本周训练负荷较高，建议周末安排主动恢复');
+      advice.push('本周训练负荷较高，建议周末安排1-2天主动恢复');
       advice.push('保证每天8小时以上睡眠，促进身体恢复');
-      advice.push('增加蛋白质摄入，帮助肌肉修复');
+      advice.push('适当增加蛋白质摄入，帮助肌肉修复');
     } else if (trainingLoad > 150) {
-      advice.push('训练负荷适中，保持良好作息');
-      advice.push('训练后注意拉伸放松');
+      advice.push('训练负荷适中，保持良好作息和训练节奏');
+      advice.push('训练后注意拉伸放松，避免肌肉紧张');
     } else {
-      advice.push('本周训练量适中，可适当增加训练强度');
-      advice.push('保持规律运动习惯');
+      advice.push('本周训练量适中，可适当增加训练强度或频次');
+      advice.push('保持规律运动习惯，循序渐进提升能力');
+    }
+
+    if (loadChange.trend === 'increasing' && loadChange.changePercentage > 20) {
+      advice.push('⚠️ 负荷增加过快，注意监控身体状态，避免过度训练');
     }
 
     if (trainingCount >= 5) {
-      advice.push('训练频次较高，注意安排休息日');
+      advice.push('训练频次较高，建议每周至少安排1天完全休息日');
+    }
+
+    if (sports.includes(SportType.STRENGTH) && trainingCount >= 2) {
+      advice.push('力量训练后给肌肉48小时恢复时间，同一肌群不要连续两天训练');
+    }
+
+    if (sports.includes(SportType.RUNNING) && sports.includes(SportType.CYCLING)) {
+      advice.push('跑骑结合的训练模式很棒，注意两种运动的强度搭配');
+    }
+
+    if (sports.includes(SportType.BALL)) {
+      advice.push('球类训练注意赛前热身和赛后拉伸，减少运动损伤风险');
     }
 
     return advice;
@@ -519,19 +548,217 @@ export class DataAggregator {
     if (!course) {
       return {
         courseId,
-        totalCompletions: records.length,
+        totalCompletions: 0,
+        totalDuration: 0,
         avgDuration: 0
       };
     }
 
     const totalDuration = records.reduce((sum, r) => sum + r.data.duration, 0);
+    const avgDuration = records.length > 0 ? totalDuration / records.length : 0;
 
-    return {
+    let totalDistance = 0;
+    let hasDistance = false;
+    let totalTrainingLoad = 0;
+
+    let ballActionMap = new Map<string, { count: number; successCount: number; totalAttempts: number }>();
+    let totalBallActions = 0;
+    let totalBallSuccessful = 0;
+    let totalBallAttempts = 0;
+    let highIntensityDuration = 0;
+
+    for (const record of records) {
+      if ('distance' in record.data && record.data.distance) {
+        totalDistance += record.data.distance;
+        hasDistance = true;
+      }
+
+      const fatigue = fatigueScorer.calculate(record.recordId);
+      if (fatigue) {
+        totalTrainingLoad += fatigue.score;
+      }
+
+      if (record.sportType === 'ball') {
+        const analysis = motionAnalyzer.analyzeRecord(record.recordId);
+        if (analysis && 'actions' in analysis) {
+          for (const action of analysis.actions) {
+            const existing = ballActionMap.get(action.actionType) || { count: 0, successCount: 0, totalAttempts: 0 };
+            existing.count += action.count;
+            existing.successCount += action.successCount;
+            existing.totalAttempts += action.totalAttempts || action.count;
+            ballActionMap.set(action.actionType, existing);
+          }
+          totalBallActions += analysis.totalActions;
+          totalBallSuccessful += analysis.totalSuccessful;
+          totalBallAttempts += analysis.actions.reduce((s: number, a: BallActionDetail) => s + (a.totalAttempts || a.count), 0);
+          if ('highIntensityDuration' in analysis) {
+            highIntensityDuration += analysis.highIntensityDuration;
+          }
+        }
+      }
+    }
+
+    let bestPerformance: BestPerformance | undefined;
+    if (records.length > 0) {
+      bestPerformance = this.findCourseBestPerformance(records);
+    }
+
+    const avgTrainingLoad = records.length > 0 ? totalTrainingLoad / records.length : 0;
+    const avgDistance = records.length > 0 ? totalDistance / records.length : 0;
+
+    const result: CourseSummary = {
       courseId,
+      courseName: course.name,
+      sportType: course.sportType,
       totalCompletions: records.length,
-      avgDuration: records.length > 0 ? Math.round(totalDuration / records.length) : 0,
-      difficultyRating: course.difficulty
+      totalDuration: Math.round(totalDuration),
+      avgDuration: Math.round(avgDuration),
+      avgTrainingLoad: Math.round(avgTrainingLoad),
+      totalTrainingLoad: Math.round(totalTrainingLoad),
+      difficultyRating: course.difficulty,
+      bestPerformance
     };
+
+    if (hasDistance) {
+      result.totalDistance = Math.round(totalDistance);
+      result.avgDistance = Math.round(avgDistance);
+    }
+
+    if (course.sportType === SportType.BALL && ballActionMap.size > 0) {
+      const actions = Array.from(ballActionMap.entries())
+        .map(([actionType, stats]) => ({
+          actionType,
+          count: stats.count,
+          successCount: stats.successCount,
+          successRate: stats.totalAttempts > 0 ? Math.round((stats.successCount / stats.totalAttempts) * 100) / 100 : 0
+        }))
+        .sort((a, b) => b.count - a.count);
+
+      result.ballActionStats = {
+        totalActions: totalBallActions,
+        totalSuccessful: totalBallSuccessful,
+        overallSuccessRate: totalBallAttempts > 0 ? Math.round((totalBallSuccessful / totalBallAttempts) * 100) / 100 : 0,
+        actions
+      };
+
+      if (highIntensityDuration > 0) {
+        result.highIntensityDuration = Math.round(highIntensityDuration);
+      }
+    }
+
+    return result;
+  }
+
+  private findCourseBestPerformance(records: any[]): BestPerformance | undefined {
+    if (records.length === 0) return undefined;
+
+    let best: BestPerformance | undefined;
+
+    for (const record of records) {
+      let perf: BestPerformance | undefined;
+
+      if (record.sportType === 'running' && 'distance' in record.data && record.data.distance) {
+        const distanceKm = record.data.distance / 1000;
+        const pace = record.data.duration / distanceKm;
+        perf = {
+          sportType: record.sportType,
+          distance: record.data.distance,
+          distanceKm: Math.round(distanceKm * 100) / 100,
+          time: record.data.duration,
+          timeFormatted: this.formatDuration(record.data.duration),
+          pace: Math.round(pace * 10) / 10,
+          paceFormatted: this.formatPaceStr(pace),
+          date: record.startTime,
+          dateFormatted: this.formatDateStr(record.startTime),
+          recordId: record.recordId,
+          label: `${distanceKm.toFixed(1)}km 跑步`,
+          value: `配速 ${this.formatPaceStr(pace)}`
+        };
+      } else if (record.sportType === 'cycling' && 'distance' in record.data && record.data.distance) {
+        const distanceKm = record.data.distance / 1000;
+        const avgSpeed = distanceKm / (record.data.duration / 3600);
+        perf = {
+          sportType: record.sportType,
+          distance: record.data.distance,
+          distanceKm: Math.round(distanceKm * 100) / 100,
+          time: record.data.duration,
+          timeFormatted: this.formatDuration(record.data.duration),
+          date: record.startTime,
+          dateFormatted: this.formatDateStr(record.startTime),
+          recordId: record.recordId,
+          label: `${distanceKm.toFixed(1)}km 骑行`,
+          value: `均速 ${avgSpeed.toFixed(1)}km/h`
+        };
+      } else if (record.sportType === 'strength') {
+        let totalVolume = 0;
+        let exerciseCount = 0;
+        if ('sets' in record.data && record.data.sets) {
+          totalVolume = record.data.sets.reduce((sum: number, s: any) => sum + s.weight * s.reps, 0);
+          const exercises = new Set(record.data.sets.map((s: any) => s.exerciseName));
+          exerciseCount = exercises.size;
+        }
+        perf = {
+          sportType: record.sportType,
+          time: record.data.duration,
+          timeFormatted: this.formatDuration(record.data.duration),
+          date: record.startTime,
+          dateFormatted: this.formatDateStr(record.startTime),
+          recordId: record.recordId,
+          label: `力量训练`,
+          value: `${totalVolume}kg 容量 / ${exerciseCount}个动作`
+        };
+      } else if (record.sportType === 'ball') {
+        let actionCount = 0;
+        if ('actions' in record.data && record.data.actions) {
+          actionCount = record.data.actions.reduce((sum: number, a: any) => sum + a.count, 0);
+        }
+        perf = {
+          sportType: record.sportType,
+          time: record.data.duration,
+          timeFormatted: this.formatDuration(record.data.duration),
+          date: record.startTime,
+          dateFormatted: this.formatDateStr(record.startTime),
+          recordId: record.recordId,
+          label: `球类训练`,
+          value: `${actionCount} 次动作`
+        };
+      }
+
+      if (perf) {
+        if (!best) {
+          best = perf;
+        } else {
+          if (perf.pace && best.pace && perf.pace < best.pace) best = perf;
+          else if (perf.distance && best.distance && perf.distance > best.distance) best = perf;
+          else if (perf.date && best.date && perf.date > best.date) best = perf;
+        }
+      }
+    }
+
+    return best;
+  }
+
+  private formatDuration(seconds: number): string {
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.round(seconds % 60);
+    if (hours > 0) {
+      return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${minutes}:${secs.toString().padStart(2, '0')}`;
+  }
+
+  private formatPaceStr(paceInSecondsPerKm: number): string {
+    const minutes = Math.floor(paceInSecondsPerKm / 60);
+    const seconds = Math.round(paceInSecondsPerKm % 60);
+    return `${minutes}'${seconds.toString().padStart(2, '0')}"`;
+  }
+
+  private formatDateStr(timestamp: number): string {
+    const date = new Date(timestamp);
+    const month = date.getMonth() + 1;
+    const day = date.getDate();
+    return `${month}月${day}日`;
   }
 }
 

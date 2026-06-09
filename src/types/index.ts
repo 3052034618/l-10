@@ -234,14 +234,22 @@ export interface PaceAnalysis {
   paceVariation: number;
 }
 
+export interface PeakPowerPoint {
+  duration: number;
+  durationLabel: string;
+  power: number;
+  wattsPerKg?: number;
+}
+
 export interface PowerAnalysis {
   avgPower: number;
   maxPower: number;
   normalizedPower: number;
-  powerDistribution: { range: string; duration: number; percentage: number }[];
+  powerDistribution: { range: string; zoneName: string; duration: number; percentage: number }[];
   trainingStressScore?: number;
   intensityFactor?: number;
   variabilityIndex?: number;
+  peakPowerCurve?: PeakPowerPoint[];
 }
 
 export interface MotionCount {
@@ -400,10 +408,25 @@ export interface TeamSummary {
 
 export interface CourseSummary {
   courseId: string;
+  courseName?: string;
+  sportType?: SportType;
   totalCompletions: number;
+  totalDuration: number;
   avgDuration: number;
   avgScore?: number;
+  avgTrainingLoad?: number;
+  totalTrainingLoad?: number;
   difficultyRating?: number;
+  totalDistance?: number;
+  avgDistance?: number;
+  ballActionStats?: {
+    totalActions: number;
+    totalSuccessful: number;
+    overallSuccessRate: number;
+    actions: { actionType: string; count: number; successCount: number; successRate: number }[];
+  };
+  bestPerformance?: BestPerformance;
+  highIntensityDuration?: number;
 }
 
 export interface AggregationOptions {

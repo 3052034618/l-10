@@ -106,7 +106,7 @@ export class MotionAnalyzer {
   }
 
   analyzeBall(data: BallTrainingData, userId?: string): BallAnalysis {
-    const actionDetails: BallActionDetail[] = [];
+    const actionMap = new Map<string, { count: number; successCount: number; totalAttempts: number }>();
     let totalActions = 0;
     let totalSuccessful = 0;
     let totalAttempts = 0;
@@ -115,21 +115,39 @@ export class MotionAnalyzer {
       for (const action of data.actions) {
         const successCount = action.successCount !== undefined ? action.successCount : Math.round(action.count * (action.successRate || 0.8));
         const attempts = action.totalAttempts !== undefined ? action.totalAttempts : action.count;
-        const successRate = action.successRate !== undefined ? action.successRate : (attempts > 0 ? successCount / attempts : 0);
+        const key = action.actionType;
 
-        actionDetails.push({
-          actionType: action.actionType,
-          count: action.count,
-          successCount,
-          successRate: Math.round(successRate * 100) / 100,
-          totalAttempts: attempts
-        });
-
-        totalActions += action.count;
-        totalSuccessful += successCount;
-        totalAttempts += attempts;
+        if (actionMap.has(key)) {
+          const existing = actionMap.get(key)!;
+          existing.count += action.count;
+          existing.successCount += successCount;
+          existing.totalAttempts += attempts;
+        } else {
+          actionMap.set(key, {
+            count: action.count,
+            successCount,
+            totalAttempts: attempts
+          });
+        }
       }
     }
+
+    const actionDetails: BallActionDetail[] = [];
+    for (const [actionType, stats] of actionMap) {
+      const successRate = stats.totalAttempts > 0 ? stats.successCount / stats.totalAttempts : 0;
+      actionDetails.push({
+        actionType,
+        count: stats.count,
+        successCount: stats.successCount,
+        successRate: Math.round(successRate * 100) / 100,
+        totalAttempts: stats.totalAttempts
+      });
+      totalActions += stats.count;
+      totalSuccessful += stats.successCount;
+      totalAttempts += stats.totalAttempts;
+    }
+
+    actionDetails.sort((a, b) => b.count - a.count);
 
     const overallSuccessRate = totalAttempts > 0 ? totalSuccessful / totalAttempts : 0;
 
