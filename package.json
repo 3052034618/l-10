@@ -1,0 +1,24 @@
+{
+  "name": "smart-sports-training-sdk",
+  "version": "1.0.0",
+  "description": "智慧体育训练数据 SDK - 统一的运动表现分析能力",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "node dist/examples/basic.js"
+  },
+  "keywords": [
+    "sports",
+    "training",
+    "sdk",
+    "fitness",
+    "analytics"
+  ],
+  "author": "Smart Sports",
+  "license": "MIT",
+  "devDependencies": {
+    "typescript": "^5.3.0"
+  }
+}
